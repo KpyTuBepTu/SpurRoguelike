@@ -16,11 +16,10 @@ namespace Slave
         public Turn MakeTurn(LevelView levelView, IMessageReporter messageReporter)
         {
             if (levelView.Player.Location == levelView.Field.GetCellsOfType(CellType.PlayerStart).Single())
-            {
                 slave = new Slave(ref levelView, messageReporter);
-            }
 
-            return Turn.None;
+            System.Threading.Thread.Sleep(100);
+            return slave.SlaveObjectives.Peek()();
         }
     }
 
@@ -35,8 +34,9 @@ namespace Slave
 
     public class Slave
     {
-        private List<Func<Turn>> Objectives { get; set; }
-        private Stack<Func<Turn>> SlaveObjectives { get; set; }
+        public Stack<Func<Turn>> SlaveObjectives { get; private set; }
+
+        private List<Func<Turn>> objectives;       
         private LevelView level;
         private Map map;
         private IMessageReporter messageReporter;
@@ -48,65 +48,76 @@ namespace Slave
             this.messageReporter = messageReporter;
             this.level = level;
 
-            Objectives = new List<Func<Turn>>();
-            Objectives.Add(GoToExit);
-            Objectives.Add(FindBestEquip);
-            Objectives.Add(MakeYourselfStronger);
-            Objectives.Add(GoHealYourself);
-            Objectives.Add(StartJourney);
+            objectives = new List<Func<Turn>>();
+            objectives.Add(GoToExit);
+            objectives.Add(FindBestEquip);
+            objectives.Add(MakeYourselfStronger);
+            objectives.Add(GoHealYourself);
+            objectives.Add(StartJourney);
 
             NewLvlObjectives();
         }
 
         private void NewLvlObjectives()
         {
-            SlaveObjectives.Push(Objectives[(int)SlaveActions.GoToExit]);
-            SlaveObjectives.Push(Objectives[(int)SlaveActions.FindBestEquip]);
-            SlaveObjectives.Push(Objectives[(int)SlaveActions.StartJourney]);
+            SlaveObjectives.Push(objectives[(int)SlaveActions.GoToExit]);
+            SlaveObjectives.Push(objectives[(int)SlaveActions.FindBestEquip]);
+            SlaveObjectives.Push(objectives[(int)SlaveActions.StartJourney]);
             isNewObjective = true;
         }
 
         private Turn StartJourney()
         {
+            messageReporter.ReportMessage("-----Start Journey");
             return ObjectiveDoneOrImpossible();
         }
 
         private Turn GoToExit()
         {
-            if (!isNewObjective)
-                return map.GetNextStep();
-            else
+            messageReporter.ReportMessage("-----GoToExit");
+            Turn turn = SearchMonstersAround();
+            if (turn != Turn.None)
+                return turn;
+            turn = CheckHealthEquipExp();
+            if (turn != Turn.None)
+                return turn;
+
+            if (level.Player.Health < 100 && GetClosestFruit().HasValue)
             {
-                isNewObjective = false;
-                return CreateMap(level.Field.GetCellsOfType(CellType.Exit).Single());
+                SlaveObjectives.Push(objectives[(int)SlaveActions.GoHealYourself]);
+                return SlaveObjectives.Peek()();
             }
+
+            return CreateMap(level.Field.GetCellsOfType(CellType.Exit).Single());
         }
 
         private Turn FindBestEquip()
         {
-            if (!isNewObjective)
-                return map.GetNextStep();
+            messageReporter.ReportMessage("-----FindBestEquip");
+            Turn turn = SearchMonstersAround();
+            if (turn != Turn.None)
+                return turn;
+            turn = CheckHealthEquipExp();
+            if (turn != Turn.None)
+                return turn;
+
+            if (level.Player.TotalAttack == level.Player.Attack && level.Player.TotalDefence == level.Player.Defence)
+            {
+                var closestItem = level.Items
+                    .Select(i => i.Location)
+                    .OrderBy(i => Math.Sqrt(Math.Pow(level.Player.Location.X - i.X, 2) + Math.Pow(level.Player.Location.Y - i.Y, 2)))
+                    .First();
+
+                return CreateMap(closestItem);
+            }
             else
             {
-                isNewObjective = false;
-                if (level.Player.TotalAttack == level.Player.Attack && level.Player.TotalDefence == level.Player.Defence)
-                {
-                    var closestItem = level.Items
-                        .Select(i => i.Location)
-                        .OrderBy(i => Math.Sqrt(Math.Pow(level.Player.Location.X - i.X, 2) + Math.Pow(level.Player.Location.Y - i.Y, 2)))
-                        .First();
+                var bestItem = CheckEquipOnField();
 
-                    return CreateMap(closestItem);
-                }
+                if (bestItem.HasValue)
+                    return CreateMap(bestItem.Location);
                 else
-                {
-                    var bestItem = CheckEquipOnField();
-
-                    if (bestItem.HasValue)
-                        return CreateMap(bestItem.Location);
-                    else
-                        return ObjectiveDoneOrImpossible();
-                }
+                    return ObjectiveDoneOrImpossible();
             }
         }
 
@@ -125,12 +136,20 @@ namespace Slave
 
         private Turn MakeYourselfStronger()
         {
+            messageReporter.ReportMessage("-----MakeYourselfStronger");
+            Turn turn = SearchMonstersAround();
+            if (turn != Turn.None)
+                return turn;
+            //turn = CheckHealthAndEquip();
+            //if (turn != Turn.None)
+            //    return turn;
+
             //if (!isNewObjective)
             //    return map.GetNextStep();
             //else
             //{
             //    isNewObjective = false;
-                var closestMonster = CheckOnAvailableExperience();
+            var closestMonster = CheckOnAvailableExperience();
 
                 if (closestMonster != default(MonsterFightInfo))
                     if (level.Player.Location.IsInRange(closestMonster.Info.Location, 1))
@@ -145,7 +164,7 @@ namespace Slave
         private MonsterFightInfo CheckOnAvailableExperience()
         {
             // цифра - кол-во ходов до моба
-            int visionToFight = level.Player.Location.X + level.Player.Location.Y - 25;
+            int visionToFight = level.Player.Location.X + level.Player.Location.Y - 100;
             return level.Monsters
                     .Select(m => new MonsterFightInfo(m, level.Player))
                     .Where(m => m.IsSaveToKill &&
@@ -157,18 +176,13 @@ namespace Slave
 
         private Turn GoHealYourself()
         {
-            if (!isNewObjective)
-                return map.GetNextStep();
-            else
-            {
-                isNewObjective = false;
-                var closestFruit = GetClosestFruit();
+            messageReporter.ReportMessage("-----GoHealYourself");
+            var closestFruit = GetClosestFruit();
 
-                if (closestFruit.HasValue)
-                    return CreateMap(closestFruit.Location);
-                else
-                    return ObjectiveDoneOrImpossible();
-            }
+            if (closestFruit.HasValue)
+                return CreateMap(closestFruit.Location);
+            else
+                return ObjectiveDoneOrImpossible();
         }
 
         private HealthPackView GetClosestFruit()
@@ -180,7 +194,19 @@ namespace Slave
 
         private Turn CreateMap(Location location)
         {
-            Turn turn = CheckAllMapVariants(location);
+            Turn turn;
+            if (!isNewObjective)
+            {
+                turn = map.GetNextStep();
+                if (turn != Turn.None)
+                    return turn;
+                else
+                    return ObjectiveDoneOrImpossible();
+            }
+            else
+                isNewObjective = false;
+
+            turn = CheckAllMapVariants(location);
             if (turn != Turn.None)
                 return turn;
             else
@@ -207,14 +233,15 @@ namespace Slave
                     if (map.PathExist)
                         return map.GetNextStep();
                     else
-                    {
-                        map.AddTrapsToMap();
-                        map.SearchPath(location);
-                        if (map.PathExist)
-                            return map.GetNextStep();
-                        else
-                            return Turn.None;
-                    }
+                        return Turn.None;
+                    //{
+                    //    map.AddTrapsToMap();
+                    //    map.SearchPath(location);
+                    //    if (map.PathExist)
+                    //        return map.GetNextStep();
+                    //    else
+                    //        return Turn.None;
+                    //}
                 }
             }
         }
@@ -224,7 +251,96 @@ namespace Slave
             isNewObjective = true;
             SlaveObjectives.Pop();
             map = new Map(ref level);
+            messageReporter.ReportMessage("-----ObjectiveDoneOrImpossible");
             return SlaveObjectives.Peek()();
+        }
+
+        private Turn SearchMonstersAround()
+        {
+            var nearbyMonsters = level.Monsters
+                .Where(m => m.Location.IsInRange(level.Player.Location, 1))
+                .Select(m => new MonsterFightInfo(m, level.Player));
+
+            if (nearbyMonsters.Count() == 0)
+                return Turn.None;
+            else if (nearbyMonsters.Count() == 1)
+            {
+                map = new Map(ref level);
+                isNewObjective = true;
+
+                var monster = nearbyMonsters.Single();
+                if (level.Player.Health >= 30)
+                    return Turn.Attack(monster.Info.Location - level.Player.Location);
+                else
+                    return Escape();
+            }
+            else if (nearbyMonsters.Count() == 2)
+            {
+                map = new Map(ref level);
+                isNewObjective = true;
+
+                var totalDamage = nearbyMonsters.Sum(m => m.DamageToSlave);
+                var saveToKill = nearbyMonsters
+                    .OrderBy(m => m.HitsToDeath)
+                    .Where(m => (m.HitsToDeath + 4 < level.Player.Health / totalDamage) || (level.Player.Health >= 50 && level.Player.Health > totalDamage))
+                    .FirstOrDefault();
+
+                if (saveToKill != default(MonsterFightInfo))
+                    return Turn.Attack(saveToKill.Info.Location - level.Player.Location);
+                else
+                    return Escape();
+            }
+            else
+                return Escape();
+        }
+
+        private Turn Escape()
+        {
+            if (SlaveObjectives.Peek() == objectives[(int)SlaveActions.MakeYourselfStronger] || SlaveObjectives.Peek() == objectives[(int)SlaveActions.FindBestEquip])
+                ObjectiveDoneOrImpossible();
+            else
+                isNewObjective = true;
+            SlaveObjectives.Push(GoHealYourself);
+            return SlaveObjectives.Peek()();
+        }
+
+        private Turn CheckHealthEquipExp()
+        {
+            if (level.Player.Health <= 50 && GetClosestFruit().HasValue)
+            {
+                if (SlaveObjectives.Peek() == objectives[(int)SlaveActions.FindBestEquip] || SlaveObjectives.Peek() == objectives[(int)SlaveActions.MakeYourselfStronger])
+                    ObjectiveDoneOrImpossible();
+                else
+                    isNewObjective = true;
+                SlaveObjectives.Push(GoHealYourself);
+                return SlaveObjectives.Peek()();
+            }
+            else if (CheckEquipOnField().HasValue && SlaveObjectives.Peek() != objectives[(int)SlaveActions.FindBestEquip])
+            {
+                if (SlaveObjectives.Peek() == objectives[(int)SlaveActions.GoHealYourself])
+                    return Turn.None;
+                else if (SlaveObjectives.Peek() == objectives[(int)SlaveActions.MakeYourselfStronger])
+                    ObjectiveDoneOrImpossible();
+                else
+                    isNewObjective = true;
+
+                SlaveObjectives.Push(FindBestEquip);
+                return SlaveObjectives.Peek()();
+            }
+            else if (CheckOnAvailableExperience() != default(MonsterFightInfo) && SlaveObjectives.Peek() != objectives[(int)SlaveActions.FindBestEquip])
+            {
+                if (SlaveObjectives.Peek() == objectives[(int)SlaveActions.GoHealYourself])
+                    return Turn.None;
+                else if (SlaveObjectives.Peek() == objectives[(int)SlaveActions.MakeYourselfStronger])
+                    ObjectiveDoneOrImpossible();
+                else
+                    isNewObjective = true;
+
+                SlaveObjectives.Push(MakeYourselfStronger);
+                return SlaveObjectives.Peek()();
+            }
+            else
+                return Turn.None;
         }
     }
 
@@ -245,6 +361,7 @@ namespace Slave
 
         private void InitializeMap()
         {
+            path = new Stack<Location>();
             cells = level.Field.GetCellsOfType(CellType.Empty)
                 .Where(l => !level.Items.Select(i => i.Location).Contains(l) && !level.HealthPacks.Select(i => i.Location).Contains(l))
                 .ToList();
@@ -276,7 +393,7 @@ namespace Slave
                         }
                 }
                 previousCount = currentCount;
-                if ((previousCount == waves.Count) || PathExist)
+                if ((previousCount == waves.Count))
                     isNoReply = false;
             }
             if (waves.Keys.Contains(finish))
